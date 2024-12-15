@@ -21,8 +21,6 @@ from livekit.plugins import deepgram, openai, silero, elevenlabs
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, BlipProcessor, BlipForConditionalGeneration
 
-# ---------------- Load Environment Variables ----------------
-# Since you're setting environment variables directly in PowerShell, no need to load .env
 
 # ---------------- Device Setup ----------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
