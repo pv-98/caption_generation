@@ -182,6 +182,99 @@ async def _enableCamera(ctx):
     await ctx.room.local_participant.publish_data("camera_enable", reliable=True, topic="camera")
 
 
+def video_frame_to_pil_image(frame) -> Image.Image:
+    """
+    Convert a VideoFrame object to a PIL.Image.Image.
+
+    Parameters:
+        frame: The VideoFrame object.
+
+    Returns:
+        Image.Image: The converted PIL Image or None if conversion fails.
+    """
+    try:
+        
+        y_bytes = frame.get_plane(0).tobytes()
+        u_bytes = frame.get_plane(1).tobytes()
+        v_bytes = frame.get_plane(2).tobytes()
+
+        height = frame.height
+        width = frame.width
+
+        # I420 format (YUV 4:2:0)
+        i420 = y_bytes + u_bytes + v_bytes
+
+        # Convert I420 to BGR
+        i420_frame = np.frombuffer(i420, dtype=np.uint8).reshape((height * 3 // 2, width))
+        bgr = cv2.cvtColor(i420_frame, cv2.COLOR_YUV2BGR_I420)
+
+        # Convert BGR to RGB
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+        image_pil = Image.fromarray(rgb)
+        return image_pil
+    except Exception as e:
+        print(f"[ERROR] video_frame_to_pil_image: {e}")
+        return None
+
+
+def compute_sharpness(image: Image.Image) -> float:
+    """
+    Compute the sharpness of an image using the variance of the Laplacian.
+    
+    Parameters:
+        image (PIL.Image.Image): The image to evaluate.
+        
+    Returns:
+        float: Variance of Laplacian, representing sharpness. Higher is sharper.
+    """
+    try:
+        gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+        laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+        variance = laplacian.var()
+        return variance
+    except Exception as e:
+        print(f"[ERROR] compute_sharpness: {e}")
+        return 0.0
+
+async def select_best_frame(latest_images_deque):
+    """
+    Select the best frame from a deque of frames based on sharpness.
+
+    Parameters:
+        latest_images_deque (list): List of VideoFrame objects.
+
+    Returns:
+        VideoFrame: The frame with the highest sharpness, or None if none found.
+    """
+    if not latest_images_deque:
+        print("[WARNING] No frames available to select from.")
+        return None
+
+    loop = asyncio.get_event_loop()
+    best_sharpness = -1.0
+    best_frame = None
+
+    # Convert frames to images and compute sharpness asynchronously
+    for frame in latest_images_deque:
+        # Convert VideoFrame to PIL Image
+        image_pil = video_frame_to_pil_image(frame)
+        if image_pil is None:
+            continue
+
+        # Compute sharpness
+        sharpness = compute_sharpness(image_pil)
+        if sharpness > best_sharpness:
+            best_sharpness = sharpness
+            best_frame = frame
+
+    if best_frame is None:
+        print("[WARNING] No valid frames after sharpness computation.")
+        return None
+
+    print(f"[INFO] Selected best frame with sharpness {best_sharpness:.2f}")
+    return best_frame
+
 async def _getVideoFrame(ctx, assistant):
     await _enableCamera(ctx)
     latest_images_deque = []
@@ -194,21 +287,18 @@ async def _getVideoFrame(ctx, assistant):
             latest_images_deque.append(latest_frame)
             assistant.fnc_ctx.latest_image = latest_frame
             if len(latest_images_deque) == 5:
+                # Use the updated select_best_frame function
                 best_frame = await select_best_frame(latest_images_deque)
-                frame_i420 = best_frame.convert("I420")
-                y_plane = frame_i420.get_plane(0)
-                u_plane = frame_i420.get_plane(1)
-                v_plane = frame_i420.get_plane(2)
-                y_bytes = y_plane.tobytes()
-                u_bytes = u_plane.tobytes()
-                v_bytes = v_plane.tobytes()
-                width = frame_i420.width
-                height = frame_i420.height
-                i420 = y_bytes + u_bytes + v_bytes
-                i420_frame = np.frombuffer(i420, dtype=np.uint8).reshape((height * 3 // 2, width))
-                bgr = cv2.cvtColor(i420_frame, cv2.COLOR_YUV2BGR_I420)
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-                image_pil = Image.fromarray(rgb)
+                if best_frame is None:
+                    print("[ERROR] No best frame selected.")
+                    return None
+
+                # Convert best_frame to JPEG bytes
+                image_pil = video_frame_to_pil_image(best_frame)
+                if image_pil is None:
+                    print("[ERROR] Failed to convert best frame to PIL image.")
+                    return None
+
                 buffer = io.BytesIO()
                 image_pil.save(buffer, format='JPEG')
                 image_bytes = buffer.getvalue()
@@ -216,9 +306,6 @@ async def _getVideoFrame(ctx, assistant):
     except Exception as e:
         print(f"[ERROR] Error in getVideoFrame function: {e}")
         return None
-
-async def select_best_frame(latest_images_deque):
-    return latest_images_deque[-1]
 
 async def proprietary_model_describe(chat_image: ChatImage = None) -> str:
     if gpt is None:
